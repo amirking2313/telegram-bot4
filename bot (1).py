@@ -20,7 +20,35 @@ REQUIRED_CHANNEL = os.environ.get('REQUIRED_CHANNEL', '@your_channel_username')
 SUPPORT_ID = os.environ.get('SUPPORT_ID', 'YOUR_SUPPORT_USERNAME')
 
 # لینک تصاویر در GitHub - این لینک را تغییر دهید
-GITHUB_REPO_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/receipt_templates/"
+GITHUB_REPO_URL = "https://raw.githubusercontent.com/amirking2313/telegram-bot4/main/receipt_templates/"
+```
+
+**⚠️ نکته:** اگر branch شما `master` است، `main` را به `master` تغییر دهید.
+
+### مثال لینک صحیح:
+```
+https://raw.githubusercontent.com/amirking2313/telegram-bot4/main/receipt_templates/receipt_up.jpg
+```
+
+---
+
+## 📦 فایل‌های نهایی پروژه:
+```
+telegram-receipt-bot/
+├── main.py                    ← کد اصلی ربات (Artifact 1)
+├── requirements.txt           ← کتابخانه‌ها (Artifact 2)
+├── Procfile                   ← برای Heroku
+├── runtime.txt                ← نسخه Python
+└── users_data.json            ← خودکار ساخته می‌شود
+```
+
+**تصاویر در GitHub:**
+```
+your-github-repo/
+└── receipt_templates/
+    ├── receipt_up.jpg
+    ├── receipt_hamrah_card.jpg
+    └── ... (بقیه تصاویر)
 
 # مراحل مکالمه
 CARD_SOURCE, CARD_DEST, DEST_OWNER_NAME, AMOUNT, SOURCE_OWNER_NAME, CONFIRM_RECEIPT = range(6)
@@ -618,3 +646,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
