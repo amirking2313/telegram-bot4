@@ -3,8 +3,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
-from arabic_reshaper import reshape
-from bidi.algorithm import get_display
 import json
 import os
 import re
@@ -19,7 +17,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
 REQUIRED_CHANNEL = os.environ.get('REQUIRED_CHANNEL', '@your_channel_username')
 SUPPORT_ID = os.environ.get('SUPPORT_ID', 'YOUR_SUPPORT_USERNAME')
 
-# مسیر پوشه تصاویر محلی
+# مسیر پوشه تصاویر
 RECEIPTS_DIR = "receipt_templates"
 
 # مراحل مکالمه
@@ -29,7 +27,7 @@ CARD_SOURCE, CARD_DEST, DEST_OWNER_NAME, AMOUNT, SOURCE_OWNER_NAME, CONFIRM_RECE
 USER_DATA_FILE = "users_data.json"
 OUTPUT_DIR = "generated_receipts"
 
-# ساخت پوشه‌ها در صورت عدم وجود
+# ساخت پوشه‌ها
 for directory in [RECEIPTS_DIR, OUTPUT_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -49,155 +47,45 @@ def save_users_data(data):
 
 users_data = load_users_data()
 
-# تنظیمات رسیدها - مختصات بر اساس عکس‌های شما
+# تنظیمات رسیدها با مختصات دقیق
 RECEIPT_CONFIGS = {
     'receipt_up': {
         'template': 'receipt_up.jpg',
         'name': 'آپ',
         'positions': {
-            'card_source': (200, 450),
-            'card_dest': (200, 550),
-            'amount': (200, 650),
-            'source_owner': (200, 750),
-            'dest_owner': (200, 850),
-            'date': (200, 950),
-            'time': (500, 950),
-            'tracking': (200, 1050)
+            'card_source': (150, 400),
+            'card_dest': (150, 500),
+            'amount': (150, 600),
+            'source_owner': (150, 700),
+            'dest_owner': (150, 800),
+            'date': (150, 900),
+            'time': (450, 900),
+            'tracking': (150, 1000)
         },
-        'font_size': 40,
-        'color': (0, 0, 0)
+        'font_size': 38,
+        'color': (0, 0, 0),
+        'direction': 'rtl'
     },
     'receipt_hamrah_card': {
         'template': 'receipt_hamrah_card.jpg',
         'name': 'همراه کارت',
         'positions': {
-            'card_source': (180, 430),
-            'card_dest': (180, 530),
-            'amount': (180, 630),
-            'source_owner': (180, 730),
-            'dest_owner': (180, 830),
-            'date': (180, 930),
-            'time': (480, 930),
-            'tracking': (180, 1030)
+            'card_source': (160, 410),
+            'card_dest': (160, 510),
+            'amount': (160, 610),
+            'source_owner': (160, 710),
+            'dest_owner': (160, 810),
+            'date': (160, 910),
+            'time': (460, 910),
+            'tracking': (160, 1010)
         },
-        'font_size': 38,
-        'color': (0, 0, 0)
+        'font_size': 36,
+        'color': (0, 0, 0),
+        'direction': 'rtl'
     },
     'receipt_iva': {
         'template': 'receipt_iva.jpg',
         'name': 'ایوا',
-        'positions': {
-            'card_source': (190, 440),
-            'card_dest': (190, 540),
-            'amount': (190, 640),
-            'source_owner': (190, 740),
-            'dest_owner': (190, 840),
-            'date': (190, 940),
-            'time': (490, 940),
-            'tracking': (190, 1040)
-        },
-        'font_size': 36,
-        'color': (255, 255, 255)
-    },
-    'receipt_top': {
-        'template': 'receipt_top.jpg',
-        'name': 'تاپ',
-        'positions': {
-            'card_source': (195, 445),
-            'card_dest': (195, 545),
-            'amount': (195, 645),
-            'source_owner': (195, 745),
-            'dest_owner': (195, 845),
-            'date': (195, 945),
-            'time': (495, 945),
-            'tracking': (195, 1045)
-        },
-        'font_size': 37,
-        'color': (0, 0, 0)
-    },
-    'receipt_blue': {
-        'template': 'receipt_blue.jpg',
-        'name': 'بلو',
-        'positions': {
-            'card_source': (185, 435),
-            'card_dest': (185, 535),
-            'amount': (185, 635),
-            'source_owner': (185, 735),
-            'dest_owner': (185, 835),
-            'date': (185, 935),
-            'time': (485, 935),
-            'tracking': (185, 1035)
-        },
-        'font_size': 35,
-        'color': (255, 255, 255)
-    },
-    'receipt_mellat': {
-        'template': 'receipt_mellat.jpg',
-        'name': 'همراه بانک ملت',
-        'positions': {
-            'card_source': (175, 425),
-            'card_dest': (175, 525),
-            'amount': (175, 625),
-            'source_owner': (175, 725),
-            'dest_owner': (175, 825),
-            'date': (175, 925),
-            'time': (475, 925),
-            'tracking': (175, 1025)
-        },
-        'font_size': 39,
-        'color': (218, 0, 55)
-    },
-    'receipt_tejarat': {
-        'template': 'receipt_tejarat.jpg',
-        'name': 'همراه بانک تجارت',
-        'positions': {
-            'card_source': (188, 438),
-            'card_dest': (188, 538),
-            'amount': (188, 638),
-            'source_owner': (188, 738),
-            'dest_owner': (188, 838),
-            'date': (188, 938),
-            'time': (488, 938),
-            'tracking': (188, 1038)
-        },
-        'font_size': 37,
-        'color': (0, 51, 102)
-    },
-    'receipt_refah': {
-        'template': 'receipt_refah.jpg',
-        'name': 'همراه بانک رفاه',
-        'positions': {
-            'card_source': (192, 442),
-            'card_dest': (192, 542),
-            'amount': (192, 642),
-            'source_owner': (192, 742),
-            'dest_owner': (192, 842),
-            'date': (192, 942),
-            'time': (492, 942),
-            'tracking': (192, 1042)
-        },
-        'font_size': 38,
-        'color': (0, 112, 60)
-    },
-    'receipt_melli_bam': {
-        'template': 'receipt_melli_bam.jpg',
-        'name': 'همراه بانک ملی بام',
-        'positions': {
-            'card_source': (182, 432),
-            'card_dest': (182, 532),
-            'amount': (182, 632),
-            'source_owner': (182, 732),
-            'dest_owner': (182, 832),
-            'date': (182, 932),
-            'time': (482, 932),
-            'tracking': (182, 1032)
-        },
-        'font_size': 36,
-        'color': (0, 86, 184)
-    },
-    'receipt_724': {
-        'template': 'receipt_724.jpg',
-        'name': '724',
         'positions': {
             'card_source': (170, 420),
             'card_dest': (170, 520),
@@ -208,22 +96,143 @@ RECEIPT_CONFIGS = {
             'time': (470, 920),
             'tracking': (170, 1020)
         },
+        'font_size': 35,
+        'color': (255, 255, 255),
+        'direction': 'rtl'
+    },
+    'receipt_top': {
+        'template': 'receipt_top.jpg',
+        'name': 'تاپ',
+        'positions': {
+            'card_source': (165, 415),
+            'card_dest': (165, 515),
+            'amount': (165, 615),
+            'source_owner': (165, 715),
+            'dest_owner': (165, 815),
+            'date': (165, 915),
+            'time': (465, 915),
+            'tracking': (165, 1015)
+        },
+        'font_size': 37,
+        'color': (0, 0, 0),
+        'direction': 'rtl'
+    },
+    'receipt_blue': {
+        'template': 'receipt_blue.jpg',
+        'name': 'بلو',
+        'positions': {
+            'card_source': (155, 405),
+            'card_dest': (155, 505),
+            'amount': (155, 605),
+            'source_owner': (155, 705),
+            'dest_owner': (155, 805),
+            'date': (155, 905),
+            'time': (455, 905),
+            'tracking': (155, 1005)
+        },
+        'font_size': 34,
+        'color': (255, 255, 255),
+        'direction': 'rtl'
+    },
+    'receipt_mellat': {
+        'template': 'receipt_mellat.jpg',
+        'name': 'همراه بانک ملت',
+        'positions': {
+            'card_source': (145, 395),
+            'card_dest': (145, 495),
+            'amount': (145, 595),
+            'source_owner': (145, 695),
+            'dest_owner': (145, 795),
+            'date': (145, 895),
+            'time': (445, 895),
+            'tracking': (145, 995)
+        },
+        'font_size': 39,
+        'color': (218, 0, 55),
+        'direction': 'rtl'
+    },
+    'receipt_tejarat': {
+        'template': 'receipt_tejarat.jpg',
+        'name': 'همراه بانک تجارت',
+        'positions': {
+            'card_source': (158, 408),
+            'card_dest': (158, 508),
+            'amount': (158, 608),
+            'source_owner': (158, 708),
+            'dest_owner': (158, 808),
+            'date': (158, 908),
+            'time': (458, 908),
+            'tracking': (158, 1008)
+        },
+        'font_size': 37,
+        'color': (0, 51, 102),
+        'direction': 'rtl'
+    },
+    'receipt_refah': {
+        'template': 'receipt_refah.jpg',
+        'name': 'همراه بانک رفاه',
+        'positions': {
+            'card_source': (162, 412),
+            'card_dest': (162, 512),
+            'amount': (162, 612),
+            'source_owner': (162, 712),
+            'dest_owner': (162, 812),
+            'date': (162, 912),
+            'time': (462, 912),
+            'tracking': (162, 1012)
+        },
+        'font_size': 38,
+        'color': (0, 112, 60),
+        'direction': 'rtl'
+    },
+    'receipt_melli_bam': {
+        'template': 'receipt_melli_bam.jpg',
+        'name': 'همراه بانک ملی بام',
+        'positions': {
+            'card_source': (152, 402),
+            'card_dest': (152, 502),
+            'amount': (152, 602),
+            'source_owner': (152, 702),
+            'dest_owner': (152, 802),
+            'date': (152, 902),
+            'time': (452, 902),
+            'tracking': (152, 1002)
+        },
+        'font_size': 36,
+        'color': (0, 86, 184),
+        'direction': 'rtl'
+    },
+    'receipt_724': {
+        'template': 'receipt_724.jpg',
+        'name': '724',
+        'positions': {
+            'card_source': (140, 390),
+            'card_dest': (140, 490),
+            'amount': (140, 590),
+            'source_owner': (140, 690),
+            'dest_owner': (140, 790),
+            'date': (140, 890),
+            'time': (440, 890),
+            'tracking': (140, 990)
+        },
         'font_size': 40,
-        'color': (0, 0, 0)
+        'color': (0, 0, 0),
+        'direction': 'rtl'
     },
     'bank_sms': {
         'template': 'bank_sms.jpg',
         'name': 'پیامک بانکی',
         'positions': {
-            'card_source': (150, 380),
-            'card_dest': (150, 460),
-            'amount': (150, 540),
-            'date': (150, 620),
-            'time': (400, 620),
-            'tracking': (150, 700)
+            'card_source': (120, 360),
+            'card_dest': (120, 440),
+            'amount': (120, 520),
+            'date': (120, 600),
+            'time': (370, 600),
+            'tracking': (120, 680)
         },
         'font_size': 32,
-        'color': (0, 0, 0)
+        'color': (0, 0, 0),
+        'direction': 'rtl'
     }
 }
 
@@ -235,11 +244,17 @@ def format_card_number(card):
     return card
 
 def fix_persian_text(text):
-    """درست کردن متن فارسی برای نمایش صحیح"""
+    """درست کردن متن فارسی"""
     try:
-        reshaped_text = reshape(text)
-        bidi_text = get_display(reshaped_text)
-        return bidi_text
+        from arabic_reshaper import reshape
+        from bidi.algorithm import get_display
+        reshaped = reshape(text)
+        bidi = get_display(reshaped)
+        return bidi
+    except ImportError:
+        # اگر کتابخانه نصب نبود، متن رو معکوس می‌کنیم (راه حل موقت)
+        logger.warning("⚠️ کتابخانه‌های فارسی نصب نیست - استفاده از روش جایگزین")
+        return text[::-1]
     except:
         return text
 
@@ -248,31 +263,75 @@ def create_receipt_image(receipt_type, data):
     try:
         config = RECEIPT_CONFIGS.get(receipt_type)
         if not config:
-            logger.error(f"تنظیمات {receipt_type} یافت نشد")
+            logger.error(f"❌ تنظیمات {receipt_type} یافت نشد")
             return None
         
-        # بارگذاری تصویر از فایل محلی
+        # مسیر کامل فایل
         template_path = os.path.join(RECEIPTS_DIR, config['template'])
+        abs_path = os.path.abspath(template_path)
         
+        logger.info(f"🔍 جستجوی فایل: {abs_path}")
+        
+        # بررسی وجود فایل
         if not os.path.exists(template_path):
-            logger.error(f"⚠️ فایل {template_path} یافت نشد!")
-            logger.error(f"لطفاً مطمئن شوید فایل {config['template']} در پوشه {RECEIPTS_DIR} موجود است")
+            logger.error(f"❌ فایل یافت نشد: {template_path}")
+            logger.error(f"📁 پوشه فعلی: {os.getcwd()}")
+            logger.error(f"📋 فایل‌های موجود در {RECEIPTS_DIR}:")
             
-            # ساخت تصویر پیش‌فرض با پیام خطا
-            img = Image.new('RGB', (1080, 1920), color=(240, 240, 240))
+            if os.path.exists(RECEIPTS_DIR):
+                files = os.listdir(RECEIPTS_DIR)
+                for f in files:
+                    logger.error(f"   - {f}")
+            else:
+                logger.error(f"   پوشه {RECEIPTS_DIR} وجود ندارد!")
+            
+            # ساخت رسید جایگزین با متن
+            img = Image.new('RGB', (1080, 1920), color=(245, 245, 245))
             draw = ImageDraw.Draw(img)
-            try:
-                title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 50)
-                error_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 30)
-            except:
-                title_font = ImageFont.load_default()
-                error_font = ImageFont.load_default()
             
-            draw.text((540, 300), f"Receipt: {config['name']}", font=title_font, fill=(200, 0, 0), anchor="mm")
-            draw.text((540, 400), "Template image not found!", font=error_font, fill=(200, 0, 0), anchor="mm")
-            draw.text((540, 500), f"Looking for: {template_path}", font=error_font, fill=(100, 100, 100), anchor="mm")
+            try:
+                font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 50)
+                font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 35)
+                font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+            except:
+                font_large = ImageFont.load_default()
+                font_medium = ImageFont.load_default()
+                font_small = ImageFont.load_default()
+            
+            # رسم هدر
+            draw.rectangle([(0, 0), (1080, 150)], fill=(41, 128, 185))
+            title_text = fix_persian_text(f"رسید {config['name']}")
+            draw.text((540, 75), title_text, font=font_large, fill=(255, 255, 255), anchor="mm")
+            
+            # رسم محتوا
+            y_pos = 250
+            line_height = 100
+            
+            info_items = [
+                (f"کارت مبدا: {data.get('card_source', 'N/A')}", (0, 0, 0)),
+                (f"کارت مقصد: {data.get('card_dest', 'N/A')}", (0, 0, 0)),
+                (f"مبلغ: {data.get('amount', 'N/A')} تومان", (0, 150, 0)),
+                (f"فرستنده: {data.get('source_owner', 'N/A')}", (0, 0, 0)),
+                (f"گیرنده: {data.get('dest_owner', 'N/A')}", (0, 0, 0)),
+                (f"تاریخ: {data.get('date', 'N/A')}", (100, 100, 100)),
+                (f"زمان: {data.get('time', 'N/A')}", (100, 100, 100)),
+                (f"شماره پیگیری: {data.get('tracking', 'N/A')}", (150, 0, 0)),
+            ]
+            
+            for text, color in info_items:
+                fixed_text = fix_persian_text(text)
+                draw.text((540, y_pos), fixed_text, font=font_medium, fill=color, anchor="mm")
+                y_pos += line_height
+            
+            # پیام خطا در پایین
+            draw.rectangle([(50, 1700), (1030, 1850)], fill=(231, 76, 60))
+            error_text = "Template image not found!"
+            draw.text((540, 1775), error_text, font=font_small, fill=(255, 255, 255), anchor="mm")
+            
         else:
-            logger.info(f"✅ بارگذاری تصویر: {template_path}")
+            logger.info(f"✅ فایل یافت شد: {template_path}")
+            
+            # بارگذاری تصویر
             img = Image.open(template_path)
             
             # تبدیل به RGB
@@ -280,65 +339,66 @@ def create_receipt_image(receipt_type, data):
                 img = img.convert('RGB')
             
             logger.info(f"✅ اندازه تصویر: {img.size}")
-        
-        draw = ImageDraw.Draw(img)
-        
-        # بارگذاری فونت
-        font = None
-        font_paths = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-            "C:\\Windows\\Fonts\\arial.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
-        ]
-        
-        for font_path in font_paths:
-            try:
-                font = ImageFont.truetype(font_path, config['font_size'])
-                logger.info(f"✅ فونت بارگذاری شد: {font_path}")
-                break
-            except:
-                continue
-        
-        if not font:
-            logger.warning("⚠️ از فونت پیش‌فرض استفاده می‌شود")
-            font = ImageFont.load_default()
-        
-        positions = config['positions']
-        color = config['color']
-        
-        # نوشتن اطلاعات با فارسی درست
-        if 'card_source' in positions and data.get('card_source'):
-            text = fix_persian_text(data['card_source'])
-            draw.text(positions['card_source'], text, font=font, fill=color)
-        
-        if 'card_dest' in positions and data.get('card_dest'):
-            text = fix_persian_text(data['card_dest'])
-            draw.text(positions['card_dest'], text, font=font, fill=color)
-        
-        if 'amount' in positions and data.get('amount'):
-            text = fix_persian_text(f"{data['amount']} تومان")
-            draw.text(positions['amount'], text, font=font, fill=color)
-        
-        if 'source_owner' in positions and data.get('source_owner'):
-            text = fix_persian_text(data['source_owner'])
-            draw.text(positions['source_owner'], text, font=font, fill=color)
-        
-        if 'dest_owner' in positions and data.get('dest_owner'):
-            text = fix_persian_text(data['dest_owner'])
-            draw.text(positions['dest_owner'], text, font=font, fill=color)
-        
-        if 'date' in positions and data.get('date'):
-            text = fix_persian_text(data['date'])
-            draw.text(positions['date'], text, font=font, fill=color)
-        
-        if 'time' in positions and data.get('time'):
-            text = fix_persian_text(data['time'])
-            draw.text(positions['time'], text, font=font, fill=color)
-        
-        if 'tracking' in positions and data.get('tracking'):
-            text = fix_persian_text(data['tracking'])
-            draw.text(positions['tracking'], text, font=font, fill=color)
+            
+            draw = ImageDraw.Draw(img)
+            
+            # بارگذاری فونت
+            font = None
+            font_paths = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "C:\\Windows\\Fonts\\arial.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "arial.ttf"
+            ]
+            
+            for font_path in font_paths:
+                try:
+                    font = ImageFont.truetype(font_path, config['font_size'])
+                    logger.info(f"✅ فونت بارگذاری شد: {font_path}")
+                    break
+                except:
+                    continue
+            
+            if not font:
+                logger.warning("⚠️ استفاده از فونت پیش‌فرض")
+                font = ImageFont.load_default()
+            
+            positions = config['positions']
+            color = config['color']
+            
+            # نوشتن اطلاعات
+            if 'card_source' in positions and data.get('card_source'):
+                text = fix_persian_text(data['card_source'])
+                draw.text(positions['card_source'], text, font=font, fill=color)
+            
+            if 'card_dest' in positions and data.get('card_dest'):
+                text = fix_persian_text(data['card_dest'])
+                draw.text(positions['card_dest'], text, font=font, fill=color)
+            
+            if 'amount' in positions and data.get('amount'):
+                text = fix_persian_text(f"{data['amount']} تومان")
+                draw.text(positions['amount'], text, font=font, fill=color)
+            
+            if 'source_owner' in positions and data.get('source_owner'):
+                text = fix_persian_text(data['source_owner'])
+                draw.text(positions['source_owner'], text, font=font, fill=color)
+            
+            if 'dest_owner' in positions and data.get('dest_owner'):
+                text = fix_persian_text(data['dest_owner'])
+                draw.text(positions['dest_owner'], text, font=font, fill=color)
+            
+            if 'date' in positions and data.get('date'):
+                text = fix_persian_text(data['date'])
+                draw.text(positions['date'], text, font=font, fill=color)
+            
+            if 'time' in positions and data.get('time'):
+                text = fix_persian_text(data['time'])
+                draw.text(positions['time'], text, font=font, fill=color)
+            
+            if 'tracking' in positions and data.get('tracking'):
+                text = fix_persian_text(data['tracking'])
+                draw.text(positions['tracking'], text, font=font, fill=color)
         
         # ذخیره در بافر
         output = io.BytesIO()
@@ -610,7 +670,19 @@ async def confirm_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_users_data(users_data)
         
     else:
-        await processing_msg.edit_text("❌ خطا در ساخت رسید. لطفاً تصاویر رسیدها را در پوشه receipt_templates قرار دهید.")
+        await processing_msg.edit_text("""
+❌ خطا در ساخت رسید
+
+لطفاً مطمئن شوید:
+1️⃣ تصاویر رسیدها در پوشه receipt_templates آپلود شده‌اند
+2️⃣ نام فایل‌ها دقیقاً مانند این است:
+   - receipt_up.jpg
+   - receipt_hamrah_card.jpg
+   - و غیره...
+3️⃣ فرمت تصاویر JPG است
+
+📋 برای کمک به ادمین پیام دهید: @{SUPPORT_ID}
+""")
     
     await show_main_menu(update, context)
     
@@ -624,18 +696,37 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """تابع اصلی"""
-    # چاپ اطلاعات مسیرها برای Debug
+    # چاپ اطلاعات برای Debug
+    logger.info("="*50)
+    logger.info("🚀 شروع ربات رسید ساز")
+    logger.info("="*50)
     logger.info(f"📁 مسیر فعلی: {os.getcwd()}")
-    logger.info(f"📁 پوشه تصاویر: {RECEIPTS_DIR}")
+    logger.info(f"📁 مسیر مطلق تصاویر: {os.path.abspath(RECEIPTS_DIR)}")
     
     if os.path.exists(RECEIPTS_DIR):
         files = os.listdir(RECEIPTS_DIR)
-        logger.info(f"📋 فایل‌های موجود در {RECEIPTS_DIR}: {files}")
+        logger.info(f"✅ پوشه {RECEIPTS_DIR} وجود دارد")
+        logger.info(f"📋 تعداد فایل‌ها: {len(files)}")
+        if files:
+            logger.info("📋 فایل‌های موجود:")
+            for f in files:
+                file_path = os.path.join(RECEIPTS_DIR, f)
+                file_size = os.path.getsize(file_path)
+                logger.info(f"   ✓ {f} ({file_size} bytes)")
+        else:
+            logger.warning("⚠️ پوشه خالی است! لطفاً تصاویر را آپلود کنید")
     else:
-        logger.warning(f"⚠️ پوشه {RECEIPTS_DIR} وجود ندارد!")
+        logger.error(f"❌ پوشه {RECEIPTS_DIR} وجود ندارد!")
+        logger.info("📁 ساخت پوشه...")
+        os.makedirs(RECEIPTS_DIR)
+        logger.info("✅ پوشه ساخته شد. لطفاً تصاویر را آپلود کنید")
     
+    logger.info("="*50)
+    
+    # ساخت اپلیکیشن
     application = Application.builder().token(BOT_TOKEN).build()
     
+    # هندلر مکالمه
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_handler)],
         states={
@@ -653,6 +744,9 @@ def main():
     application.add_handler(conv_handler)
     
     logger.info("✅ ربات شروع به کار کرد...")
+    logger.info("🔗 برای تست به ربات خود پیام دهید: /start")
+    logger.info("="*50)
+    
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
