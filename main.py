@@ -1,268 +1,659 @@
-# bot_receipt_fun.py
-# نیازمندی‌ها:
-# pip install python-telegram-bot==20.3 Pillow
-
-import json
-import time
-from pathlib import Path
-from io import BytesIO
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
+from arabic_reshaper import reshape
+from bidi.algorithm import get_display
+import json
+import os
+import re
+import io
 
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
-)
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ContextTypes, ConversationHandler, MessageHandler, filters
-)
+# تنظیمات لاگینگ
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# ---------- تنظیمات ----------
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-SUPPORT_USER = "YourSupportUsername"  # بدون @
-ADMIN_IDS = [123456789]  # آیدی عددی ادمین‌ها
-DATA_FILE = Path("users_data.json")
+# تنظیمات ربات
+BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
+REQUIRED_CHANNEL = os.environ.get('REQUIRED_CHANNEL', '@your_channel_username')
+SUPPORT_ID = os.environ.get('SUPPORT_ID', 'YOUR_SUPPORT_USERNAME')
 
-RECEIPT_TYPES = [
-    "رسید آپ", "رسید همراه کارت", "رسید ایوا", "رسید تاپ",
-    "رسید بلو", "رسید همراه بانک ملت", "رسید همراه بانک تجارت",
-    "رسید همراه بانک رفاه", "رسید همراه بانک ملی بام", "رسید 724",
-    "پیامک بانکی", "خرید حساب ویژه", "سکه روزانه"
-]
+# مسیر پوشه تصاویر محلی
+RECEIPTS_DIR = "receipt_templates"
 
-# conversation states
-CHOOSING_TYPE, ASK_CARD_FROM, ASK_CARD_TO, ASK_AMOUNT, ASK_NAME = range(5)
+# مراحل مکالمه
+CARD_SOURCE, CARD_DEST, DEST_OWNER_NAME, AMOUNT, SOURCE_OWNER_NAME, CONFIRM_RECEIPT = range(6)
 
-# ---------- ذخیره و بارگذاری ----------
-def load_data():
-    if DATA_FILE.exists():
-        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
+# فایل ذخیره‌سازی
+USER_DATA_FILE = "users_data.json"
+OUTPUT_DIR = "generated_receipts"
+
+# ساخت پوشه‌ها در صورت عدم وجود
+for directory in [RECEIPTS_DIR, OUTPUT_DIR]:
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+def load_users_data():
+    if os.path.exists(USER_DATA_FILE):
+        try:
+            with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
-def save_data(data):
-    DATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+def save_users_data(data):
+    with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-users = load_data()
+users_data = load_users_data()
 
-def ensure_user(uid, username=None, first_name=None, last_name=None):
-    s = users.setdefault(str(uid), {
-        "username": username,
-        "first_name": first_name,
-        "last_name": last_name,
-        "coins": 0,
-        "is_premium": False,
-        "last_daily": 0
-    })
-    # به‌روز کردن اطلاعات له‌صورت سبک
-    s["username"] = username
-    s["first_name"] = first_name
-    s["last_name"] = last_name
-    return s
+# تنظیمات رسیدها - مختصات بر اساس عکس‌های شما
+RECEIPT_CONFIGS = {
+    'receipt_up': {
+        'template': 'receipt_up.jpg',
+        'name': 'آپ',
+        'positions': {
+            'card_source': (200, 450),
+            'card_dest': (200, 550),
+            'amount': (200, 650),
+            'source_owner': (200, 750),
+            'dest_owner': (200, 850),
+            'date': (200, 950),
+            'time': (500, 950),
+            'tracking': (200, 1050)
+        },
+        'font_size': 40,
+        'color': (0, 0, 0)
+    },
+    'receipt_hamrah_card': {
+        'template': 'receipt_hamrah_card.jpg',
+        'name': 'همراه کارت',
+        'positions': {
+            'card_source': (180, 430),
+            'card_dest': (180, 530),
+            'amount': (180, 630),
+            'source_owner': (180, 730),
+            'dest_owner': (180, 830),
+            'date': (180, 930),
+            'time': (480, 930),
+            'tracking': (180, 1030)
+        },
+        'font_size': 38,
+        'color': (0, 0, 0)
+    },
+    'receipt_iva': {
+        'template': 'receipt_iva.jpg',
+        'name': 'ایوا',
+        'positions': {
+            'card_source': (190, 440),
+            'card_dest': (190, 540),
+            'amount': (190, 640),
+            'source_owner': (190, 740),
+            'dest_owner': (190, 840),
+            'date': (190, 940),
+            'time': (490, 940),
+            'tracking': (190, 1040)
+        },
+        'font_size': 36,
+        'color': (255, 255, 255)
+    },
+    'receipt_top': {
+        'template': 'receipt_top.jpg',
+        'name': 'تاپ',
+        'positions': {
+            'card_source': (195, 445),
+            'card_dest': (195, 545),
+            'amount': (195, 645),
+            'source_owner': (195, 745),
+            'dest_owner': (195, 845),
+            'date': (195, 945),
+            'time': (495, 945),
+            'tracking': (195, 1045)
+        },
+        'font_size': 37,
+        'color': (0, 0, 0)
+    },
+    'receipt_blue': {
+        'template': 'receipt_blue.jpg',
+        'name': 'بلو',
+        'positions': {
+            'card_source': (185, 435),
+            'card_dest': (185, 535),
+            'amount': (185, 635),
+            'source_owner': (185, 735),
+            'dest_owner': (185, 835),
+            'date': (185, 935),
+            'time': (485, 935),
+            'tracking': (185, 1035)
+        },
+        'font_size': 35,
+        'color': (255, 255, 255)
+    },
+    'receipt_mellat': {
+        'template': 'receipt_mellat.jpg',
+        'name': 'همراه بانک ملت',
+        'positions': {
+            'card_source': (175, 425),
+            'card_dest': (175, 525),
+            'amount': (175, 625),
+            'source_owner': (175, 725),
+            'dest_owner': (175, 825),
+            'date': (175, 925),
+            'time': (475, 925),
+            'tracking': (175, 1025)
+        },
+        'font_size': 39,
+        'color': (218, 0, 55)
+    },
+    'receipt_tejarat': {
+        'template': 'receipt_tejarat.jpg',
+        'name': 'همراه بانک تجارت',
+        'positions': {
+            'card_source': (188, 438),
+            'card_dest': (188, 538),
+            'amount': (188, 638),
+            'source_owner': (188, 738),
+            'dest_owner': (188, 838),
+            'date': (188, 938),
+            'time': (488, 938),
+            'tracking': (188, 1038)
+        },
+        'font_size': 37,
+        'color': (0, 51, 102)
+    },
+    'receipt_refah': {
+        'template': 'receipt_refah.jpg',
+        'name': 'همراه بانک رفاه',
+        'positions': {
+            'card_source': (192, 442),
+            'card_dest': (192, 542),
+            'amount': (192, 642),
+            'source_owner': (192, 742),
+            'dest_owner': (192, 842),
+            'date': (192, 942),
+            'time': (492, 942),
+            'tracking': (192, 1042)
+        },
+        'font_size': 38,
+        'color': (0, 112, 60)
+    },
+    'receipt_melli_bam': {
+        'template': 'receipt_melli_bam.jpg',
+        'name': 'همراه بانک ملی بام',
+        'positions': {
+            'card_source': (182, 432),
+            'card_dest': (182, 532),
+            'amount': (182, 632),
+            'source_owner': (182, 732),
+            'dest_owner': (182, 832),
+            'date': (182, 932),
+            'time': (482, 932),
+            'tracking': (182, 1032)
+        },
+        'font_size': 36,
+        'color': (0, 86, 184)
+    },
+    'receipt_724': {
+        'template': 'receipt_724.jpg',
+        'name': '724',
+        'positions': {
+            'card_source': (170, 420),
+            'card_dest': (170, 520),
+            'amount': (170, 620),
+            'source_owner': (170, 720),
+            'dest_owner': (170, 820),
+            'date': (170, 920),
+            'time': (470, 920),
+            'tracking': (170, 1020)
+        },
+        'font_size': 40,
+        'color': (0, 0, 0)
+    },
+    'bank_sms': {
+        'template': 'bank_sms.jpg',
+        'name': 'پیامک بانکی',
+        'positions': {
+            'card_source': (150, 380),
+            'card_dest': (150, 460),
+            'amount': (150, 540),
+            'date': (150, 620),
+            'time': (400, 620),
+            'tracking': (150, 700)
+        },
+        'font_size': 32,
+        'color': (0, 0, 0)
+    }
+}
 
-# ---------- تولید تصویر نمونه رسید (با واترمارک و متن واضح "نمونه") ----------
-def make_sample_receipt(receipt_type, card_from, card_to, amount, owner_name):
-    # تصویر پایه ساده بساز
-    W, H = 800, 500
-    img = Image.new("RGB", (W, H), color=(255,255,255))
-    draw = ImageDraw.Draw(img)
+def format_card_number(card):
+    """فرمت کردن شماره کارت"""
+    card_clean = re.sub(r'\D', '', card)
+    if len(card_clean) == 16:
+        return f"{card_clean[:4]}-{card_clean[4:8]}-{card_clean[8:12]}-{card_clean[12:]}"
+    return card
 
-    # فونت (سعی کن فونت فارسی مناسب در سیستم باشه، در غیر این صورت از فونت پیش‌فرض استفاده می‌شود)
+def fix_persian_text(text):
+    """درست کردن متن فارسی برای نمایش صحیح"""
     try:
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-        font_bold = ImageFont.truetype(font_path, 22)
-        font_large = ImageFont.truetype(font_path, 32)
-        font_small = ImageFont.truetype(font_path, 18)
+        reshaped_text = reshape(text)
+        bidi_text = get_display(reshaped_text)
+        return bidi_text
     except:
-        font_bold = ImageFont.load_default()
-        font_large = ImageFont.load_default()
-        font_small = ImageFont.load_default()
+        return text
 
-    # هدر
-    draw.text((20,20), f"نمونه رسید — {receipt_type}", font=font_large, fill=(0,0,0))
-    draw.text((20,70), "توجه: این تصویر صرفاً نمونه و برای شوخی/آموزش است. قابل استفاده برای جعل نیست.", font=font_small, fill=(120,0,0))
-
-    # مشخصات
-    start_y = 120
-    gap = 45
-    draw.text((40, start_y + 0*gap), f"کارت مبدا: {card_from}", font=font_bold, fill=(0,0,0))
-    draw.text((40, start_y + 1*gap), f"کارت مقصد: {card_to}", font=font_bold, fill=(0,0,0))
-    draw.text((40, start_y + 2*gap), f"مبلغ: {amount}", font=font_bold, fill=(0,0,0))
-    draw.text((40, start_y + 3*gap), f"نام صاحب کارت: {owner_name}", font=font_bold, fill=(0,0,0))
-
-    # واترمارک بزرگ مخفی‌ناپذیر
-    wm_text = "نمونه / FOR FUN / AmiriYT"
-    w, h = draw.textsize(wm_text, font=font_large)
-    # چرخش واترمارک
-    watermark = Image.new("RGBA", (w+20, h+10), (255,255,255,0))
-    dw = ImageDraw.Draw(watermark)
-    dw.text((10,5), wm_text, font=font_large, fill=(200,200,200,80))
-    watermark = watermark.rotate(30, expand=1)
-    img.paste(watermark, (220,260), watermark)
-
-    # استمپ بزرگ "نمونه" نیمه‌شفاف
+def create_receipt_image(receipt_type, data):
+    """ساخت تصویر رسید"""
     try:
-        stamp_font = ImageFont.truetype(font_path, 80)
-    except:
-        stamp_font = ImageFont.load_default()
-    stamp = Image.new("RGBA", (W, H), (255,255,255,0))
-    ds = ImageDraw.Draw(stamp)
-    text = "نمونه"
-    tw, th = ds.textsize(text, font=stamp_font)
-    ds.text(((W-tw)//2, (H-th)//2), text, font=stamp_font, fill=(255,0,0,80))
-    img.paste(stamp, (0,0), stamp)
-
-    # خروجی بایت
-    bio = BytesIO()
-    bio.name = "receipt_sample.png"
-    img.save(bio, "PNG")
-    bio.seek(0)
-    return bio
-
-# ---------- هندلرها ----------
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    ensure_user(user.id, user.username, user.first_name, user.last_name)
-    keyboard = [
-        [InlineKeyboardButton(t, callback_data=f"receipt:{t}") for t in RECEIPT_TYPES[:3]],
-        [InlineKeyboardButton(t, callback_data=f"receipt:{t}") for t in RECEIPT_TYPES[3:6]],
-        [InlineKeyboardButton(t, callback_data=f"receipt:{t}") for t in RECEIPT_TYPES[6:9]],
-        [InlineKeyboardButton(t, callback_data=f"receipt:{t}") for t in RECEIPT_TYPES[9:12]],
-        [InlineKeyboardButton("خرید حساب ویژه", callback_data="buy_premium"), InlineKeyboardButton("سکه روزانه", callback_data="daily_coin")]
-    ]
-    kb = InlineKeyboardMarkup(keyboard)
-    text = (
-        f"سلام {user.first_name or ''} {user.last_name or ''} (@{user.username or '—'})\n"
-        f"آیدی عددی: {user.id}\n\n"
-        "به ربات رسید ساز خوش اومدی!\n"
-        "چه نوع رسیدی میخوای درست کنی؟"
-    )
-    await update.message.reply_text(text, reply_markup=kb)
-
-async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    data = q.data
-
-    user = update.effective_user
-    u = ensure_user(user.id, user.username, user.first_name, user.last_name)
-
-    if data == "buy_premium":
-        await q.message.reply_text(
-            f"برای خرید حساب ویژه لطفاً به پشتیبانی مراجعه کن: @{SUPPORT_USER}\n\n(اینجا فقط ارجاع به پی‌وی انجام می‌شود.)"
-        )
-        return
-
-    if data == "daily_coin":
-        now = int(time.time())
-        if now - u.get("last_daily", 0) >= 24*3600:
-            # در صورت تمایل چک عضویت کانال در اینجا اضافه شود
-            u["coins"] = u.get("coins",0) + 1
-            u["last_daily"] = now
-            save_data(users)
-            await q.message.reply_text("سکه روزانه به شما تعلق گرفت! 🎉\nامتیاز فعلی: {}".format(u["coins"]))
+        config = RECEIPT_CONFIGS.get(receipt_type)
+        if not config:
+            logger.error(f"تنظیمات {receipt_type} یافت نشد")
+            return None
+        
+        # بارگذاری تصویر از فایل محلی
+        template_path = os.path.join(RECEIPTS_DIR, config['template'])
+        
+        if not os.path.exists(template_path):
+            logger.error(f"⚠️ فایل {template_path} یافت نشد!")
+            logger.error(f"لطفاً مطمئن شوید فایل {config['template']} در پوشه {RECEIPTS_DIR} موجود است")
+            
+            # ساخت تصویر پیش‌فرض با پیام خطا
+            img = Image.new('RGB', (1080, 1920), color=(240, 240, 240))
+            draw = ImageDraw.Draw(img)
+            try:
+                title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 50)
+                error_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 30)
+            except:
+                title_font = ImageFont.load_default()
+                error_font = ImageFont.load_default()
+            
+            draw.text((540, 300), f"Receipt: {config['name']}", font=title_font, fill=(200, 0, 0), anchor="mm")
+            draw.text((540, 400), "Template image not found!", font=error_font, fill=(200, 0, 0), anchor="mm")
+            draw.text((540, 500), f"Looking for: {template_path}", font=error_font, fill=(100, 100, 100), anchor="mm")
         else:
-            await q.message.reply_text("شما در ۲۴ ساعت گذشته از سکه استفاده کرده‌اید. دوباره بعداً مراجعه کنید.")
-        return
+            logger.info(f"✅ بارگذاری تصویر: {template_path}")
+            img = Image.open(template_path)
+            
+            # تبدیل به RGB
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            logger.info(f"✅ اندازه تصویر: {img.size}")
+        
+        draw = ImageDraw.Draw(img)
+        
+        # بارگذاری فونت
+        font = None
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "C:\\Windows\\Fonts\\arial.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+        ]
+        
+        for font_path in font_paths:
+            try:
+                font = ImageFont.truetype(font_path, config['font_size'])
+                logger.info(f"✅ فونت بارگذاری شد: {font_path}")
+                break
+            except:
+                continue
+        
+        if not font:
+            logger.warning("⚠️ از فونت پیش‌فرض استفاده می‌شود")
+            font = ImageFont.load_default()
+        
+        positions = config['positions']
+        color = config['color']
+        
+        # نوشتن اطلاعات با فارسی درست
+        if 'card_source' in positions and data.get('card_source'):
+            text = fix_persian_text(data['card_source'])
+            draw.text(positions['card_source'], text, font=font, fill=color)
+        
+        if 'card_dest' in positions and data.get('card_dest'):
+            text = fix_persian_text(data['card_dest'])
+            draw.text(positions['card_dest'], text, font=font, fill=color)
+        
+        if 'amount' in positions and data.get('amount'):
+            text = fix_persian_text(f"{data['amount']} تومان")
+            draw.text(positions['amount'], text, font=font, fill=color)
+        
+        if 'source_owner' in positions and data.get('source_owner'):
+            text = fix_persian_text(data['source_owner'])
+            draw.text(positions['source_owner'], text, font=font, fill=color)
+        
+        if 'dest_owner' in positions and data.get('dest_owner'):
+            text = fix_persian_text(data['dest_owner'])
+            draw.text(positions['dest_owner'], text, font=font, fill=color)
+        
+        if 'date' in positions and data.get('date'):
+            text = fix_persian_text(data['date'])
+            draw.text(positions['date'], text, font=font, fill=color)
+        
+        if 'time' in positions and data.get('time'):
+            text = fix_persian_text(data['time'])
+            draw.text(positions['time'], text, font=font, fill=color)
+        
+        if 'tracking' in positions and data.get('tracking'):
+            text = fix_persian_text(data['tracking'])
+            draw.text(positions['tracking'], text, font=font, fill=color)
+        
+        # ذخیره در بافر
+        output = io.BytesIO()
+        img.save(output, format='JPEG', quality=95)
+        output.seek(0)
+        
+        logger.info("✅ رسید با موفقیت ساخته شد")
+        return output
+        
+    except Exception as e:
+        logger.error(f"❌ خطا در ساخت رسید: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
 
-    if data.startswith("receipt:"):
-        rtype = data.split(":",1)[1]
-        # ذخیره نوع انتخاب شده در context و شروع پرسش‌ها
-        context.user_data['selected_type'] = rtype
-        await q.message.reply_text("شماره کارت مبدا را وارد کن:", reply_markup=ReplyKeyboardRemove())
-        return ASK_CARD_FROM
+async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بررسی عضویت در کانال"""
+    user_id = update.effective_user.id
+    try:
+        member = await context.bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        logger.error(f"خطا در بررسی عضویت: {e}")
+        return False
 
-async def ask_card_from(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['card_from'] = update.message.text.strip()
-    await update.message.reply_text("شماره کارت مقصد را وارد کن:")
-    return ASK_CARD_TO
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دستور شروع"""
+    user = update.effective_user
+    user_id = str(user.id)
+    
+    if user_id not in users_data:
+        users_data[user_id] = {
+            'points': 0,
+            'is_premium': False,
+            'last_daily_claim': None,
+            'receipts_created': 0
+        }
+        save_users_data(users_data)
+    
+    last_name = user.last_name or ''
+    username = f"@{user.username}" if user.username else 'ندارد'
+    
+    welcome_text = f"""
+╔═══════════════════════╗
+        خوش آمدید
+╚═══════════════════════╝
 
-async def ask_card_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['card_to'] = update.message.text.strip()
-    await update.message.reply_text("مبلغ را وارد کن (مثلاً ۵۰۰۰۰۰):")
-    return ASK_AMOUNT
+👤 نام: {user.first_name} {last_name}
+🆔 یوزرنیم: {username}
+🔢 آیدی: {user.id}
+💰 امتیاز: {users_data[user_id]['points']}
+📊 تعداد رسید: {users_data[user_id]['receipts_created']}
 
-async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['amount'] = update.message.text.strip()
-    await update.message.reply_text("نام صاحب کارت را وارد کن:")
-    return ASK_NAME
+🎉 به ربات رسید ساز خوش‌آمدی!
+"""
+    
+    await update.message.reply_text(welcome_text)
+    await show_main_menu(update, context)
 
-async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.message.text.strip()
-    context.user_data['owner_name'] = name
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش منوی اصلی"""
+    keyboard = [
+        [InlineKeyboardButton("💳 آپ", callback_data='receipt_up'),
+         InlineKeyboardButton("💳 همراه کارت", callback_data='receipt_hamrah_card')],
+        [InlineKeyboardButton("💳 ایوا", callback_data='receipt_iva'),
+         InlineKeyboardButton("💳 تاپ", callback_data='receipt_top')],
+        [InlineKeyboardButton("💳 بلو", callback_data='receipt_blue'),
+         InlineKeyboardButton("💳 همراه بانک ملت", callback_data='receipt_mellat')],
+        [InlineKeyboardButton("💳 همراه بانک تجارت", callback_data='receipt_tejarat'),
+         InlineKeyboardButton("💳 همراه بانک رفاه", callback_data='receipt_refah')],
+        [InlineKeyboardButton("💳 همراه بانک ملی", callback_data='receipt_melli_bam'),
+         InlineKeyboardButton("💳 724", callback_data='receipt_724')],
+        [InlineKeyboardButton("📱 پیامک بانکی", callback_data='bank_sms')],
+        [InlineKeyboardButton("⭐️ خرید VIP", callback_data='buy_premium'),
+         InlineKeyboardButton("🎁 سکه روزانه", callback_data='daily_coin')]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = "❓ چه نوع رسیدی می‌خواهید بسازید؟"
+    
+    if update.callback_query:
+        await update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup)
 
-    # تولید تصویر نمونه
-    rtype = context.user_data.get('selected_type', 'رسید نمونه')
-    bio = make_sample_receipt(
-        receipt_type=rtype,
-        card_from=context.user_data.get('card_from','-'),
-        card_to=context.user_data.get('card_to','-'),
-        amount=context.user_data.get('amount','-'),
-        owner_name=name
-    )
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت دکمه‌ها"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(update.effective_user.id)
+    
+    if query.data == 'daily_coin':
+        is_member = await check_channel_membership(update, context)
+        
+        if not is_member:
+            keyboard = [[InlineKeyboardButton("🔗 عضویت در کانال", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.reply_text("⚠️ ابتدا در کانال عضو شوید:", reply_markup=reply_markup)
+            return ConversationHandler.END
+        
+        last_claim = users_data[user_id].get('last_daily_claim')
+        now = datetime.now()
+        
+        if last_claim:
+            last_claim_date = datetime.fromisoformat(last_claim)
+            if now - last_claim_date < timedelta(hours=24):
+                remaining = timedelta(hours=24) - (now - last_claim_date)
+                hours = remaining.seconds // 3600
+                minutes = (remaining.seconds % 3600) // 60
+                await query.message.reply_text(
+                    f"⏰ امتیاز روزانه دریافت شده\n"
+                    f"⏳ زمان باقیمانده: {hours}:{minutes:02d}"
+                )
+                return ConversationHandler.END
+        
+        users_data[user_id]['points'] += 10
+        users_data[user_id]['last_daily_claim'] = now.isoformat()
+        save_users_data(users_data)
+        
+        await query.message.reply_text(
+            f"✅ +10 امتیاز دریافت شد!\n"
+            f"💰 امتیاز کل: {users_data[user_id]['points']}"
+        )
+        return ConversationHandler.END
+    
+    elif query.data == 'buy_premium':
+        await query.message.reply_text(
+            f"⭐️ خرید حساب ویژه:\n"
+            f"👤 @{SUPPORT_ID}"
+        )
+        return ConversationHandler.END
+    
+    elif query.data.startswith('receipt_') or query.data == 'bank_sms':
+        context.user_data['receipt_type'] = query.data
+        await query.message.reply_text("📝 شماره کارت مبدا:\n\n💡 مثال: 6037997112345678")
+        return CARD_SOURCE
+    
+    return ConversationHandler.END
 
-    await update.message.reply_photo(photo=bio, caption=(
-        "رسید شما با موفقیت ساخته شد.\n"
-        "توجه: این تصویر صرفاً نمونه/شوخی است. در صورت استفاده برای کلاهبرداری مسئولیت قانونی دارد."
-    ))
+async def get_card_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت کارت مبدا"""
+    card_source = update.message.text.strip()
+    card_clean = re.sub(r'\D', '', card_source)
+    
+    if len(card_clean) != 16:
+        await update.message.reply_text("❌ شماره کارت باید 16 رقم باشد")
+        return CARD_SOURCE
+    
+    context.user_data['card_source'] = format_card_number(card_source)
+    await update.message.reply_text("📝 شماره کارت مقصد:\n\n💡 مثال: 6219861123456789")
+    return CARD_DEST
 
-    # پاک کردن user_data موقتی
-    context.user_data.clear()
+async def get_card_dest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت کارت مقصد"""
+    card_dest = update.message.text.strip()
+    card_clean = re.sub(r'\D', '', card_dest)
+    
+    if len(card_clean) != 16:
+        await update.message.reply_text("❌ شماره کارت باید 16 رقم باشد")
+        return CARD_DEST
+    
+    context.user_data['card_dest'] = format_card_number(card_dest)
+    await update.message.reply_text("👤 نام صاحب کارت مقصد:\n\n💡 مثال: علی احمدی")
+    return DEST_OWNER_NAME
+
+async def get_dest_owner_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت نام صاحب کارت مقصد"""
+    dest_owner = update.message.text.strip()
+    context.user_data['dest_owner'] = dest_owner
+    await update.message.reply_text("💰 مبلغ (تومان):\n\n💡 مثال: 500000")
+    return AMOUNT
+
+async def get_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت مبلغ"""
+    amount = update.message.text.strip()
+    
+    if not re.match(r'^\d+$', amount.replace(',', '')):
+        await update.message.reply_text("❌ مبلغ را به صورت عددی وارد کنید")
+        return AMOUNT
+    
+    amount_formatted = "{:,}".format(int(amount.replace(',', '')))
+    context.user_data['amount'] = amount_formatted
+    
+    await update.message.reply_text("👤 نام صاحب کارت مبدا:\n\n💡 مثال: محمد رضایی")
+    return SOURCE_OWNER_NAME
+
+async def get_source_owner_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت نام صاحب کارت مبدا و پیش‌نمایش"""
+    source_owner = update.message.text.strip()
+    context.user_data['source_owner'] = source_owner
+    
+    receipt_type = context.user_data['receipt_type']
+    config = RECEIPT_CONFIGS.get(receipt_type, {})
+    receipt_name = config.get('name', 'نامشخص')
+    
+    preview_text = f"""
+╔═══════════════════════╗
+   پیش‌نمایش رسید {receipt_name}
+╚═══════════════════════╝
+
+💳 کارت مبدا: {context.user_data['card_source']}
+👤 {source_owner}
+
+💳 کارت مقصد: {context.user_data['card_dest']}
+👤 {context.user_data['dest_owner']}
+
+💰 {context.user_data['amount']} تومان
+📅 {datetime.now().strftime('%Y/%m/%d')}
+🕐 {datetime.now().strftime('%H:%M:%S')}
+
+❓ تایید می‌کنید؟
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ ساخت رسید", callback_data='confirm_yes')],
+        [InlineKeyboardButton("❌ لغو", callback_data='confirm_no')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(preview_text, reply_markup=reply_markup)
+    return CONFIRM_RECEIPT
+
+async def confirm_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ساخت رسید نهایی"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == 'confirm_no':
+        await query.message.reply_text("❌ لغو شد")
+        await show_main_menu(update, context)
+        return ConversationHandler.END
+    
+    processing_msg = await query.message.reply_text("🎨 در حال ساخت رسید...")
+    
+    receipt_type = context.user_data['receipt_type']
+    now = datetime.now()
+    
+    receipt_data = {
+        'card_source': context.user_data['card_source'],
+        'card_dest': context.user_data['card_dest'],
+        'amount': context.user_data['amount'],
+        'source_owner': context.user_data['source_owner'],
+        'dest_owner': context.user_data['dest_owner'],
+        'date': now.strftime('%Y/%m/%d'),
+        'time': now.strftime('%H:%M:%S'),
+        'tracking': now.strftime('%Y%m%d%H%M%S')
+    }
+    
+    receipt_image = create_receipt_image(receipt_type, receipt_data)
+    
+    if receipt_image:
+        await processing_msg.delete()
+        
+        config = RECEIPT_CONFIGS.get(receipt_type, {})
+        caption = f"""
+✅ رسید {config.get('name', 'نامشخص')} با موفقیت ساخته شد
+
+⚠️ هشدار: در صورت کلاهبرداری اکانت شما مسدود خواهد شد
+"""
+        
+        await query.message.reply_photo(
+            photo=receipt_image,
+            caption=caption
+        )
+        
+        user_id = str(update.effective_user.id)
+        users_data[user_id]['receipts_created'] = users_data[user_id].get('receipts_created', 0) + 1
+        save_users_data(users_data)
+        
+    else:
+        await processing_msg.edit_text("❌ خطا در ساخت رسید. لطفاً تصاویر رسیدها را در پوشه receipt_templates قرار دهید.")
+    
+    await show_main_menu(update, context)
+    
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("عملیات کنسل شد.", reply_markup=ReplyKeyboardRemove())
-    context.user_data.clear()
+    """لغو عملیات"""
+    await update.message.reply_text("❌ لغو شد")
+    await show_main_menu(update, context)
     return ConversationHandler.END
 
-# ادمین: ویژه کردن کاربر
-async def admin_add_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in ADMIN_IDS:
-        await update.message.reply_text("فقط ادمین مجاز است.")
-        return
-    parts = context.args
-    if len(parts) != 1:
-        await update.message.reply_text("استفاده: /addpremium <user_id>")
-        return
-    target = parts[0]
-    if target not in users:
-        await update.message.reply_text("کاربر پیدا نشد.")
-        return
-    users[target]["is_premium"] = True
-    save_data(users)
-    await update.message.reply_text("کاربر ویژه شد.")
-
-# وضعیت حساب
-async def me_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    u = ensure_user(user.id, user.username, user.first_name, user.last_name)
-    txt = f"آیدی: {user.id}\nیوزرنیم: @{user.username or '—'}\nامتیاز: {u.get('coins',0)}\nحساب ویژه: {'بله' if u.get('is_premium') else 'خیر'}"
-    await update.message.reply_text(txt)
-
-# ---------- برنامه اصلی ----------
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(callback_query_handler, pattern=r"^receipt:")],
+    """تابع اصلی"""
+    # چاپ اطلاعات مسیرها برای Debug
+    logger.info(f"📁 مسیر فعلی: {os.getcwd()}")
+    logger.info(f"📁 پوشه تصاویر: {RECEIPTS_DIR}")
+    
+    if os.path.exists(RECEIPTS_DIR):
+        files = os.listdir(RECEIPTS_DIR)
+        logger.info(f"📋 فایل‌های موجود در {RECEIPTS_DIR}: {files}")
+    else:
+        logger.warning(f"⚠️ پوشه {RECEIPTS_DIR} وجود ندارد!")
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(button_handler)],
         states={
-            ASK_CARD_FROM: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_card_from)],
-            ASK_CARD_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_card_to)],
-            ASK_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_amount)],
-            ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
+            CARD_SOURCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_card_source)],
+            CARD_DEST: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_card_dest)],
+            DEST_OWNER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_dest_owner_name)],
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
+            SOURCE_OWNER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_source_owner_name)],
+            CONFIRM_RECEIPT: [CallbackQueryHandler(confirm_receipt)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
-        allow_reentry=True
     )
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(conv_handler)
+    
+    logger.info("✅ ربات شروع به کار کرد...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-    # هندلرها
-    app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(CallbackQueryHandler(callback_query_handler, pattern=r"^(buy_premium|daily_coin)$"))
-    app.add_handler(conv)
-    app.add_handler(CommandHandler("me", me_handler))
-    app.add_handler(CommandHandler("addpremium", admin_add_premium))  # admin only
-
-    print("Bot is running...")
-    app.run_polling()
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
