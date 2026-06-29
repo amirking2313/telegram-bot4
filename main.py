@@ -97,7 +97,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             pass
         
         # Not a member
-        keyboard = [[InlineKeyboardButton(TEXTS['join_channel'], url=f"https://t.me/+...")]]
+        keyboard = [[InlineKeyboardButton(TEXTS['join_channel'], url=f"https://t.me/clashcoccity")]]
         await update.message.reply_text(
             TEXTS['start'],
             reply_markup=InlineKeyboardMarkup(keyboard)
